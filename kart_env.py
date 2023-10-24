@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 
 import gymnasium as gym
@@ -19,30 +20,43 @@ TOTAL_LAPS = 3
 
 # addresses from https://tasvideos.org/GameResources/DS/MarioKartDS
 PLAYER_DATA_ADDR = 0x217ACF8
-PLAYER_SPEED_OFFSET = 0x2A8
+SPEED_OFFSET = 0x2A8
+TOP_SPEED_OFFSET = 0xD0
+AIR_OFFSET = 0x3DD
+PLACE_OFFSET = 0x3D8
 
 CHECKPOINT_DATA_ADDR = 0x021661B0
 CHECKPOINT_OFFSET = 0xDAE
 
+IDX_DRIVE = 0
 ACTION_NOOP = 0
 ACTION_ACCELERATE = 1
-ACTION_ACCELERATE_ITEM = 2
-ACTION_ACCELERATE_LEFT = 3
-ACTION_ACCELERATE_RIGHT = 4
+ACTION_ACCELERATE_LEFT = 2
+ACTION_ACCELERATE_RIGHT = 3
+ACTION_ACCELERATE_ITEM = 4
+
+IDX_ITEM = 1
+ACTION_ITEM = 1
+
 
 FRAMES_BEFORE_START = 256 # there is the 3, 2, 1 countdown, although 256 isn't the exact value, it's close enough.
 TIMEOUT = 600 # if we don't pass a checkpoint after 600 frames (~10 seconds @ Mario Kart's naitive 60fps) then we terminate the episode
 
 ROM_FILE = 'Mario Kart DS (USA) (En,Fr,De,Es,It)/Mario Kart DS (USA) (En,Fr,De,Es,It).nds'
+#SAVESTATE_FILES = ('figure_8_grand_prix.dsv', )
 #SAVESTATE_FILES = ('figure_8_time_trial.dsv', )
 #SAVESTATE_FILES = ('figure_8_time_trial.dsv', 'yoshi_falls_time_trial.dsv', 'cheep_cheep_beach_time_trial.dsv', 'luigis_mansion_time_trial.dsv')
 #SAVESTATE_FILES = ('luigis_mansion_time_trial.dsv', )
-SAVESTATE_FILES = ('rainbow_road_time_trial.dsv', )
+SAVESTATE_FILES = ('figure_8_time_trial.dsv', 'yoshi_falls_time_trial.dsv', 'cheep_cheep_beach_time_trial.dsv','rainbow_road_time_trial.dsv', )
 
 class MarioKartEnv(gym.Env):
 
     def __init__(self, include_lower_frame=False, rom_file=ROM_FILE, savestate_files=SAVESTATE_FILES):
         super().__init__()
+
+        # create a spec for the environment
+        #self.spec = gym.envs.registration.EnvSpec('MarioKartDS-v0-NoFrameskip')
+        self.ale = None
 
         self.include_lower_frame = include_lower_frame
 
@@ -60,11 +74,13 @@ class MarioKartEnv(gym.Env):
 
         self.emu.open(rom_file)
         self.savestate_files = savestate_files
-
+        self.grand_prix = False
 
         self.checkpoint = None
-        self.last_checkpoint = None # this is useful for detecting when we've finished a lap; we set this during reset()
+        self.final_checkpoint = None # this is useful for detecting when we've finished a lap; we set this during reset()
         self.frames_since_checkpoint = -FRAMES_BEFORE_START # if we don't make any forward progress, we're stuck and we terminate the episode (also give a buffer for the countdown)
+
+        self.top_speed = 0
 
         self.laps = -1  # we add 1 to the lap counter whenever we go from the last checkpoint to checkpoint 0, and we start in the last checkpoint, so it's easier to just start at -1
 
@@ -111,6 +127,9 @@ class MarioKartEnv(gym.Env):
 
     def _load_savestate(self):
         savestate_file = np.random.choice(self.savestate_files)
+
+        self.grand_prix = 'grand_prix' in savestate_file
+
         self.emu.savestate.load_file(savestate_file)
 
     def step(self, action):
@@ -124,27 +143,54 @@ class MarioKartEnv(gym.Env):
         terminated = False
         truncated = False
 
+        player_data_ptr = self.mem.signed.read_long(PLAYER_DATA_ADDR)
+        place = self.mem.unsigned.read_byte(player_data_ptr + PLACE_OFFSET) if self.grand_prix else 9 #
+        in_air = self.mem.unsigned.read_byte(player_data_ptr + AIR_OFFSET)
+        speed = self.mem.unsigned.read_long(player_data_ptr + SPEED_OFFSET)
+
+        #if speed == 0 and in_air:
+        #    reward -= 100/60 # lose 100 points per second while we are being held by lakitu
+
+        speed_penalty = (speed - self.top_speed) / self.top_speed * 10 / 60 # lose up to 10 points per second if the kart is at 0 speed (it also gains points if it has a boost); also catches times when the max speed is unavoidably lower, but it is worthwhile
+        speed_penalty = speed_penalty if self.frames_since_checkpoint >= 0 else 0 # don't penalize speed during the countdown
+
+        reward += speed_penalty
+
+        # print('top speed = ', self.top_speed, 'speed = ', speed, 'speed penalty = ', speed_penalty)
+        # print('saved checkpoint = ', self.checkpoint, 'current checkpoint = ', cur_checkpoint)
+
         if (cur_checkpoint - self.checkpoint == 1   # if we've moved to the next checkpoint...
-                or (cur_checkpoint == 0 and self.checkpoint == self.last_checkpoint)): # or if we've finished a lap, give a reward
+                or (cur_checkpoint == 0 and self.checkpoint == self.final_checkpoint)): # or if we've finished a lap, give a reward
             # completing a whole lap is worth 100 points, so we divide by the number of checkpoints to get the reward per checkpoint
             # checkpoints range from [0, last_checkpoint], so normally we'd add 1 to the denominator, but we give a reward for passing the finish line, so we don't need to.
-            reward = 200 / (self.last_checkpoint)
+            reward = 200 / (self.final_checkpoint)
 
-            if cur_checkpoint == 0 and self.checkpoint == self.last_checkpoint: # once we've finished a lap increase the lap counter and give a larger reward
+            if cur_checkpoint == 0 and self.checkpoint == self.final_checkpoint: # once we've finished a lap increase the lap counter and give a larger reward
                 self.laps += 1
                 reward = 100
 
             self.checkpoint = cur_checkpoint
             self.frames_since_checkpoint = 0
-        else:
+        elif cur_checkpoint - self.checkpoint <= -1:
+            reward -= 2 * 200 / (self.final_checkpoint) # if we go backwards, I'll give it a penalty that is twice as large as the reward for going forwards
+            self.checkpoint = cur_checkpoint
+
+        elif not (in_air and speed == 0): # this checks if we're being respawned by lakitu, if so, we don't want to count it towards the timeout
             self.frames_since_checkpoint += 1
 
         if self.laps == TOTAL_LAPS:
             terminated = True
+
+            if self.grand_prix:
+                reward += 1000 / place
+
         elif self.frames_since_checkpoint > TIMEOUT:
             truncated = True
+            place = 9 # if we timeout, even in grand prix, always place 9th (especially since places go 1-8 otherwise)
 
-        return self._get_obs(), reward, terminated, truncated, {'checkpoint': self.checkpoint, 'laps': self.laps, 'last_checkpoint' : self.last_checkpoint}
+        percent_complete = self.laps / TOTAL_LAPS + self.checkpoint / (self.final_checkpoint + 1) / TOTAL_LAPS
+
+        return self._get_obs(), reward, terminated, truncated, {'percent_complete': percent_complete, 'place': place}
 
     def render(self, mode='human'):
         if self.render_mode == 'human':
@@ -165,35 +211,71 @@ class MarioKartEnv(gym.Env):
 
         self._load_savestate()
         self.checkpoint = self._get_checkpoint()
-        self.last_checkpoint = self.checkpoint
+        self.final_checkpoint = self.checkpoint
         self.frames_since_checkpoint = -FRAMES_BEFORE_START
         self.laps = -1
+
+        # the top speed at the start is the normal speed on the ground, so we can use that as a baseline
+        player_data_ptr = self.mem.signed.read_long(PLAYER_DATA_ADDR)
+        self.top_speed = self.mem.unsigned.read_long(player_data_ptr + TOP_SPEED_OFFSET)
 
         return self._get_obs(), {}
 
 
-if __name__ == '__main__':
+class MarioKartEnvMultiDiscrete(MarioKartEnv):
+    """
+    Mario Kart environment with a MultiDiscrete action space.
+    """
+    def __init__(self, include_lower_frame=False):
+        super().__init__(include_lower_frame=include_lower_frame)
 
-    def make_env_with_stats():
-        env = MarioKartEnv(include_lower_frame=True)
-        env = Monitor(env)
+        self.action_space = gym.spaces.MultiDiscrete([6, 2, ]) # drive controls (straight, left, right, drift left, drift right), item
+
+    def _act(self, action):
+
+        if type(action) == int and action == 0:
+            return # this handles the no-ops done at the start of the atari wrapper, otherwise, everything should be an array
+
+        # it's just easier to clear all of the keys first and then set the ones we want instead of trying to figure out which ones are already set
+        self.emu.input.keypad_rm_key(Keys.NO_KEY_SET)
+
+        if action[IDX_DRIVE] > ACTION_NOOP:
+            self.emu.input.keypad_add_key(keymask(Keys.KEY_A))
+
+        if action[IDX_DRIVE] == ACTION_ACCELERATE_LEFT:
+            self.emu.input.keypad_add_key(keymask(Keys.KEY_LEFT))
+        elif action[IDX_DRIVE] == ACTION_ACCELERATE_RIGHT:
+            self.emu.input.keypad_add_key(keymask(Keys.KEY_RIGHT))
+
+        if action[IDX_ITEM] == ACTION_ITEM:
+            self.emu.input.keypad_add_key(keymask(Keys.KEY_X))
+
+if __name__ == '__main__':
+    now = datetime.now()
+
+    def make_env_with_stats(include_lower_frame=True, multi_discrete=False):
+        if multi_discrete:
+            env = MarioKartEnvMultiDiscrete(include_lower_frame=include_lower_frame)
+        else:
+            env = MarioKartEnv(include_lower_frame=include_lower_frame)
 
         return env
 
-    env = make_atari_env(make_env_with_stats, n_envs=12,
+    env = make_atari_env(make_env_with_stats, n_envs=12, seed=np.random.randint(0, 2**31 -1), # need to specify that the dtype is int64 so it works on windows
+                         env_kwargs={'include_lower_frame': True, 'multi_discrete': True},
                          vec_env_cls=SubprocVecEnv,
-                         wrapper_kwargs=dict(clip_reward=False, terminal_on_life_loss=False)) # don't have lives to lose, and it works better when we don't clip rewards
+                         wrapper_kwargs=dict(clip_reward=False, terminal_on_life_loss=False), # don't have lives to lose, and it works better when we don't clip rewards
+                         monitor_kwargs={'info_keywords': ('percent_complete', 'place')})
     env = VecFrameStack(env, n_stack=4)
 
     # get the current datetime so we can use it to name our tensorboard log directory
-    now = datetime.now()
     output_folder = f'./runs/{now.strftime("%Y-%m-%d_%H-%M-%S")}/'
 
-    model = RecurrentPPO('CnnLstmPolicy', env, verbose=1, tensorboard_log=output_folder, policy_kwargs={'enable_critic_lstm': False}, n_steps=2048)
-    #model = RecurrentPPO.load('runs/2023-04-21_19-06-45/mario-kart-rppo.zip', env=env, tensorboard_log=output_folder) # okay, maybe try startin with a pretrained model
+    #model = RecurrentPPO('CnnLstmPolicy', env, verbose=1, tensorboard_log=output_folder, policy_kwargs={'enable_critic_lstm': False}, n_steps=2048)
 
-    model.learn(total_timesteps=8_000_000)
+    model = RecurrentPPO.load('./runs/2023-10-22_08-40-18/mario-kart-rppo.zip', tensorboard_log=output_folder, env=env) # okay, maybe try startin with a pretrained model
+
+    model.learn(total_timesteps=10_000_000, reset_num_timesteps=True)
 
     # now that we have a trained model, we can save it and load it later
     model.save(output_folder + 'mario-kart-rppo')
-
