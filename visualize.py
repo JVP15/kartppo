@@ -27,7 +27,7 @@ if __name__ == '__main__':
     dones = np.ones((1,))
     episode_reward = 0
     while True:
-        action, _states = model.predict(obs, state=_states, episode_start=dones, deterministic=True)
+        action, _states = model.predict(obs, state=_states, episode_start=dones, deterministic=False)
         obs, rewards, dones, info = env.step(action)
         episode_reward += rewards[0]
         print(f'Episode reward: {episode_reward}')
@@ -36,7 +36,7 @@ if __name__ == '__main__':
         print('Percent Complete: ', info[0]['percent_complete'])
         print('Place = ', info[0]['place'])
         env.render()
-        time.sleep(0.5)
+        time.sleep(0.05)
         if dones[0]:
             #obs = env.reset()
             episode_reward = 0

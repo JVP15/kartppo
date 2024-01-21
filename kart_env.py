@@ -4,11 +4,15 @@ from datetime import datetime
 import gymnasium as gym
 import numpy as np
 import cv2
+from gymnasium.wrappers import FrameStack
+
+from utils import TensorboardCallback, MarioAtariWrapper
 
 
-from stable_baselines3.common.env_util import make_atari_env
+from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import VecFrameStack, SubprocVecEnv
+
 from stable_baselines3 import PPO, A2C, DQN
 from sb3_contrib import RecurrentPPO
 
@@ -45,9 +49,9 @@ TIMEOUT = 600 # if we don't pass a checkpoint after 600 frames (~10 seconds @ Ma
 ROM_FILE = 'Mario Kart DS (USA) (En,Fr,De,Es,It)/Mario Kart DS (USA) (En,Fr,De,Es,It).nds'
 #SAVESTATE_FILES = ('figure_8_grand_prix.dsv', )
 #SAVESTATE_FILES = ('figure_8_time_trial.dsv', )
-#SAVESTATE_FILES = ('figure_8_time_trial.dsv', 'yoshi_falls_time_trial.dsv', 'cheep_cheep_beach_time_trial.dsv', 'luigis_mansion_time_trial.dsv')
+SAVESTATE_FILES = ('figure_8_time_trial.dsv', 'yoshi_falls_time_trial.dsv',)
 #SAVESTATE_FILES = ('luigis_mansion_time_trial.dsv', )
-SAVESTATE_FILES = ('figure_8_time_trial.dsv', 'yoshi_falls_time_trial.dsv', 'cheep_cheep_beach_time_trial.dsv','rainbow_road_time_trial.dsv', )
+#SAVESTATE_FILES = ('figure_8_time_trial.dsv', 'yoshi_falls_time_trial.dsv', 'cheep_cheep_beach_time_trial.dsv','rainbow_road_time_trial.dsv', )
 
 class MarioKartEnv(gym.Env):
 
@@ -124,7 +128,6 @@ class MarioKartEnv(gym.Env):
             self.emu.input.keypad_add_key(keymask(Keys.KEY_A))
             self.emu.input.keypad_add_key(keymask(Keys.KEY_RIGHT))
 
-
     def _load_savestate(self):
         savestate_file = np.random.choice(self.savestate_files)
 
@@ -175,7 +178,7 @@ class MarioKartEnv(gym.Env):
             reward -= 2 * 200 / (self.final_checkpoint) # if we go backwards, I'll give it a penalty that is twice as large as the reward for going forwards
             self.checkpoint = cur_checkpoint
 
-        elif not (in_air and speed == 0): # this checks if we're being respawned by lakitu, if so, we don't want to count it towards the timeout
+        if not (in_air and speed == 0): # this checks if we're being respawned by lakitu, if so, we don't want to count it towards the timeout
             self.frames_since_checkpoint += 1
 
         if self.laps == TOTAL_LAPS:
@@ -194,16 +197,23 @@ class MarioKartEnv(gym.Env):
 
     def render(self, mode='human'):
         if self.render_mode == 'human':
-            frame = self._get_obs()
-            # resize the frame to make it 2x bigger
-            if self.include_lower_frame:
-                frame = cv2.resize(frame, (SCREEN_WIDTH * 2, SCREEN_HEIGHT_BOTH * 2), interpolation=cv2.INTER_NEAREST)
-            else:
-                frame = cv2.resize(frame, (SCREEN_WIDTH * 2, SCREEN_HEIGHT * 2), interpolation=cv2.INTER_NEAREST)
+            frame = self._get_screen_rgb()
             cv2.imshow('Mario Kart', frame)
             cv2.waitKey(1)
+        elif self.render_mode == 'rgb_array':
+            return self._get_screen_rgb()
         else:
             return self._get_obs()
+
+    def _get_screen_rgb(self):
+        frame = self._get_obs()
+        # resize the frame to make it 2x bigger
+        if self.include_lower_frame:
+            frame = cv2.resize(frame, (SCREEN_WIDTH * 2, SCREEN_HEIGHT_BOTH * 2), interpolation=cv2.INTER_NEAREST)
+        else:
+            frame = cv2.resize(frame, (SCREEN_WIDTH * 2, SCREEN_HEIGHT * 2), interpolation=cv2.INTER_NEAREST)
+
+        return frame
 
     def reset(self, seed=None, options=None):
         # NOTE: when we reset, we have to start at a time when the track is already loaded so we can get our current checkpoint (needed so that we can find the number of checkpoints)
@@ -250,7 +260,25 @@ class MarioKartEnvMultiDiscrete(MarioKartEnv):
         if action[IDX_ITEM] == ACTION_ITEM:
             self.emu.input.keypad_add_key(keymask(Keys.KEY_X))
 
+
+def create_wrapped_mario_kart_env(render_mode):
+    env = MarioKartEnv(include_lower_frame=True)
+    env = MarioAtariWrapper(env, screen_size=84, frame_skip=4)
+    #env = FrameStack(env, num_stack=4)
+
+    return env
+
+# register the environment with gym so that we can use it with stable-baselines
+
+gym.envs.registration.register(
+    id='MarioKartDS-v0',
+    entry_point='kart_env:create_wrapped_mario_kart_env',
+    nondeterministic=True,
+)
+
+
 if __name__ == '__main__':
+
     now = datetime.now()
 
     def make_env_with_stats(include_lower_frame=True, multi_discrete=False):
@@ -261,21 +289,21 @@ if __name__ == '__main__':
 
         return env
 
-    env = make_atari_env(make_env_with_stats, n_envs=12, seed=np.random.randint(0, 2**31 -1), # need to specify that the dtype is int64 so it works on windows
-                         env_kwargs={'include_lower_frame': True, 'multi_discrete': True},
+    env = make_vec_env(make_env_with_stats, n_envs=12, seed=np.random.randint(0, 2**31 -1), # need to specify that the dtype is int64 so it works on windows
+                         env_kwargs={'include_lower_frame': True, 'multi_discrete': False},
                          vec_env_cls=SubprocVecEnv,
-                         wrapper_kwargs=dict(clip_reward=False, terminal_on_life_loss=False), # don't have lives to lose, and it works better when we don't clip rewards
+                         wrapper_class=MarioAtariWrapper,
                          monitor_kwargs={'info_keywords': ('percent_complete', 'place')})
     env = VecFrameStack(env, n_stack=4)
 
     # get the current datetime so we can use it to name our tensorboard log directory
     output_folder = f'./runs/{now.strftime("%Y-%m-%d_%H-%M-%S")}/'
 
-    #model = RecurrentPPO('CnnLstmPolicy', env, verbose=1, tensorboard_log=output_folder, policy_kwargs={'enable_critic_lstm': False}, n_steps=2048)
+    model = RecurrentPPO('CnnLstmPolicy', env, verbose=1, tensorboard_log=output_folder, policy_kwargs={'enable_critic_lstm': False}, n_steps=2048)
 
-    model = RecurrentPPO.load('./runs/2023-10-22_08-40-18/mario-kart-rppo.zip', tensorboard_log=output_folder, env=env) # okay, maybe try startin with a pretrained model
+    #model = RecurrentPPO.load('./runs/2023-10-22_08-40-18/mario-kart-rppo.zip', tensorboard_log=output_folder, env=env) # okay, maybe try startin with a pretrained model
 
-    model.learn(total_timesteps=10_000_000, reset_num_timesteps=True)
+    model.learn(total_timesteps=480_000, reset_num_timesteps=True, callback=TensorboardCallback())
 
     # now that we have a trained model, we can save it and load it later
     model.save(output_folder + 'mario-kart-rppo')
