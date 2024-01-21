@@ -46,7 +46,11 @@ ACTION_ITEM = 1
 FRAMES_BEFORE_START = 256 # there is the 3, 2, 1 countdown, although 256 isn't the exact value, it's close enough.
 TIMEOUT = 600 # if we don't pass a checkpoint after 600 frames (~10 seconds @ Mario Kart's naitive 60fps) then we terminate the episode
 
-ROM_FILE = 'Mario Kart DS (USA) (En,Fr,De,Es,It)/Mario Kart DS (USA) (En,Fr,De,Es,It).nds'
+ROM_FILE = 'ROM/Mario Kart DS.nds'
+
+# we have a different linux and windows save state directory
+SAVESTATE_DIR = 'ROM/' + 'windows_saves' if os.name == 'nt' else 'linux_saves'
+
 #SAVESTATE_FILES = ('figure_8_grand_prix.dsv', )
 #SAVESTATE_FILES = ('figure_8_time_trial.dsv', )
 SAVESTATE_FILES = ('figure_8_time_trial.dsv', 'yoshi_falls_time_trial.dsv',)
