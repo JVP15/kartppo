@@ -9,14 +9,17 @@ import time
 
 
 if __name__ == '__main__':
-    env = make_atari_env(MarioKartEnvMultiDiscrete, n_envs=1, seed=np.random.randint(0, 2**31 -1),
+    env = make_atari_env(MarioKartEnv, n_envs=1, seed=np.random.randint(0, 2**31 -1),
                              wrapper_kwargs=dict(clip_reward=False, terminal_on_life_loss=False),
                          env_kwargs={'include_lower_frame':True}) # experimenting with clipped rewards, but we don't terminate on life loss
+
+    action_space = env.action_space
+
     env = VecFrameStack(env, n_stack=4)
 
     # load the model mario-kart-ppo.zip
     #model = RecurrentPPO.load('runs/2023-04-20_18-47-58/mario-kart-rppo.zip')
-    model = RecurrentPPO.load('runs/2023-10-22_12-52-58/mario-kart-rppo')
+    model = RecurrentPPO.load('runs/2023-10-28_15-54-17/mario-kart-rppo')
     #model = RecurrentPPO.load('runs/2023-07-25_08-21-56/mario-kart-rppo')
 
 
@@ -26,11 +29,16 @@ if __name__ == '__main__':
     _states = None
     dones = np.ones((1,))
     episode_reward = 0
+    timestep = 0
     while True:
-        action, _states = model.predict(obs, state=_states, episode_start=dones, deterministic=False)
-        obs, rewards, dones, info = env.step(action)
+        action, _states = model.predict(obs, state=_states, episode_start=dones, deterministic=True)
+
+        if timestep < 30: # sample a random action for the first 30 timesteps, this helps seed the random number generator (okay this doesn't actaully work, I think I just need to redo save states
+            obs, rewards, dones, info = env.step([action_space.sample()])
+        else:
+            obs, rewards, dones, info = env.step(action)
         episode_reward += rewards[0]
-        print(f'Episode reward: {episode_reward}')
+        print(f'Episode reward: {episode_reward}', '| Timestep: ', timestep)
         #print('Current checkpoint = ', info[0]['checkpoint'], 'Last checkpoint = ', info[0]['last_checkpoint'])
         #print('Current lap = ', info[0]['laps'])
         print('Percent Complete: ', info[0]['percent_complete'])
@@ -40,3 +48,5 @@ if __name__ == '__main__':
         if dones[0]:
             #obs = env.reset()
             episode_reward = 0
+
+        timestep +=1

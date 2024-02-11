@@ -1,20 +1,17 @@
 import os
-from datetime import datetime
+import sys
 
 import gymnasium as gym
+
+try:
+    import gym as old_gym
+except ImportError:
+    old_gym = None
+
 import numpy as np
 import cv2
-from gymnasium.wrappers import FrameStack
 
-from utils import TensorboardCallback, MarioAtariWrapper
-
-
-from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import VecFrameStack, SubprocVecEnv
-
-from stable_baselines3 import PPO, A2C, DQN
-from sb3_contrib import RecurrentPPO
+from utils import MarioAtariWrapper, MarioKartEnvOldGym
 
 from desmume.emulator import DeSmuME, SCREEN_PIXEL_SIZE, SCREEN_PIXEL_SIZE_BOTH, SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_HEIGHT_BOTH
 from desmume.controls import Keys, keymask
@@ -43,19 +40,19 @@ IDX_ITEM = 1
 ACTION_ITEM = 1
 
 
-FRAMES_BEFORE_START = 256 # there is the 3, 2, 1 countdown, although 256 isn't the exact value, it's close enough.
+FRAMES_BEFORE_START = 256  # there is the 3, 2, 1 countdown, although 256 isn't the exact value, it's close enough.
 TIMEOUT = 600 # if we don't pass a checkpoint after 600 frames (~10 seconds @ Mario Kart's naitive 60fps) then we terminate the episode
 
 ROM_FILE = 'ROM/Mario Kart DS.nds'
 
-# we have a different linux and windows save state directory
-SAVESTATE_DIR = 'ROM/' + 'windows_saves' if os.name == 'nt' else 'linux_saves'
+# we have a different linux and windows save state directory because you can't mix and match save states across platforms
+SAVESTATE_DIR = os.path.join('ROM', 'windows_saves' if os.name == 'nt' else 'linux_saves')
 
-#SAVESTATE_FILES = ('figure_8_grand_prix.dsv', )
-#SAVESTATE_FILES = ('figure_8_time_trial.dsv', )
-SAVESTATE_FILES = ('figure_8_time_trial.dsv', 'yoshi_falls_time_trial.dsv',)
+#SAVESTATE_FILES = ('figure-8_circuit_time_trial.dsv', )
+#SAVESTATE_FILES = ('figure-8_circuit_grand_prix.dsv', )
+#SAVESTATE_FILES = ('figure_8_time_trial.dsv', 'yoshi_falls_time_trial.dsv',)
 #SAVESTATE_FILES = ('luigis_mansion_time_trial.dsv', )
-#SAVESTATE_FILES = ('figure_8_time_trial.dsv', 'yoshi_falls_time_trial.dsv', 'cheep_cheep_beach_time_trial.dsv','rainbow_road_time_trial.dsv', )
+SAVESTATE_FILES = ('figure_8_time_trial.dsv', 'yoshi_falls_time_trial.dsv', 'cheep_cheep_beach_time_trial.dsv','rainbow_road_time_trial.dsv', )
 
 class MarioKartEnv(gym.Env):
 
@@ -136,8 +133,11 @@ class MarioKartEnv(gym.Env):
         savestate_file = np.random.choice(self.savestate_files)
 
         self.grand_prix = 'grand_prix' in savestate_file
-
-        self.emu.savestate.load_file(savestate_file)
+        try:
+            self.emu.savestate.load_file(os.path.join(SAVESTATE_DIR, savestate_file))
+        except RuntimeError:
+            print(f'Could not load savestate from path: {os.path.join(SAVESTATE_DIR, savestate_file)}')
+            sys.exit(1)
 
     def step(self, action):
         self._act(action)
@@ -265,7 +265,7 @@ class MarioKartEnvMultiDiscrete(MarioKartEnv):
             self.emu.input.keypad_add_key(keymask(Keys.KEY_X))
 
 
-def create_wrapped_mario_kart_env(render_mode):
+def create_wrapped_mario_kart_env():
     env = MarioKartEnv(include_lower_frame=True)
     env = MarioAtariWrapper(env, screen_size=84, frame_skip=4)
     #env = FrameStack(env, num_stack=4)
@@ -280,34 +280,20 @@ gym.envs.registration.register(
     nondeterministic=True,
 )
 
+if old_gym: # if the old gym is installed, then register for that too
+    def create_wrapped_mario_kart_env_old_gym():
+        env = create_wrapped_mario_kart_env()
 
-if __name__ == '__main__':
-
-    now = datetime.now()
-
-    def make_env_with_stats(include_lower_frame=True, multi_discrete=False):
-        if multi_discrete:
-            env = MarioKartEnvMultiDiscrete(include_lower_frame=include_lower_frame)
-        else:
-            env = MarioKartEnv(include_lower_frame=include_lower_frame)
+        env = MarioKartEnvOldGym(env)
+        env = old_gym.wrappers.FrameStack(env, num_stack=4)
 
         return env
 
-    env = make_vec_env(make_env_with_stats, n_envs=12, seed=np.random.randint(0, 2**31 -1), # need to specify that the dtype is int64 so it works on windows
-                         env_kwargs={'include_lower_frame': True, 'multi_discrete': False},
-                         vec_env_cls=SubprocVecEnv,
-                         wrapper_class=MarioAtariWrapper,
-                         monitor_kwargs={'info_keywords': ('percent_complete', 'place')})
-    env = VecFrameStack(env, n_stack=4)
+    old_gym.envs.register(
+        id='MarioKartDS-v0',
+        entry_point='kart_env:create_wrapped_mario_kart_env_old_gym',
+        nondeterministic=True,
+    )
 
-    # get the current datetime so we can use it to name our tensorboard log directory
-    output_folder = f'./runs/{now.strftime("%Y-%m-%d_%H-%M-%S")}/'
 
-    model = RecurrentPPO('CnnLstmPolicy', env, verbose=1, tensorboard_log=output_folder, policy_kwargs={'enable_critic_lstm': False}, n_steps=2048)
 
-    #model = RecurrentPPO.load('./runs/2023-10-22_08-40-18/mario-kart-rppo.zip', tensorboard_log=output_folder, env=env) # okay, maybe try startin with a pretrained model
-
-    model.learn(total_timesteps=480_000, reset_num_timesteps=True, callback=TensorboardCallback())
-
-    # now that we have a trained model, we can save it and load it later
-    model.save(output_folder + 'mario-kart-rppo')

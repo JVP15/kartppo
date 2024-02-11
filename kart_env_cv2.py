@@ -12,69 +12,75 @@ CHECKPOINT_OFFSET = 0xDAE
 
 # look here to unlock stuff http://uk.codejunkies.com/search/codes/Mario-Kart-DS_Nintendo-DS_17825906-17___.aspx
 # https://tasvideos.org/GameResources/DS/MarioKartDS
-emu = DeSmuME()
-mem = emu.memory
 
-emu.open('Mario Kart DS (USA) (En,Fr,De,Es,It)/Mario Kart DS (USA) (En,Fr,De,Es,It).nds')
-emu.volume_set(0)
+if __name__ == '__main__':
+    emu = DeSmuME()
+    mem = emu.memory
 
+    emu.open('ROM/Mario Kart DS.nds')
+    emu.volume_set(0)
 
-i = 0
+    key_dict = {ord('j'): keymask(Keys.KEY_LEFT), ord('l'): keymask(Keys.KEY_RIGHT), ord('i'): keymask(Keys.KEY_UP),
+                ord('k'): keymask(Keys.KEY_DOWN),
+                ord('a'): keymask(Keys.KEY_A), ord('s'): keymask(Keys.KEY_B), ord('d'): keymask(Keys.KEY_X),
+                ord('f'): keymask(Keys.KEY_Y)}
 
-key_dict = {ord('j'): keymask(Keys.KEY_LEFT), ord('l'): keymask(Keys.KEY_RIGHT), ord('i'): keymask(Keys.KEY_UP), ord('k'): keymask(Keys.KEY_DOWN),
-            ord('a'): keymask(Keys.KEY_A), ord('s'): keymask(Keys.KEY_B), ord('d'): keymask(Keys.KEY_X), ord('f'): keymask(Keys.KEY_Y)}
+    i = 0
 
+    while True:
+        i += 1
+        print(i)
+        emu.cycle()
+        emu.input.keypad_rm_key(Keys.NO_KEY_SET)
 
-while True:
-    i += 1
-    print(i)
-    emu.cycle()
-    emu.input.keypad_rm_key(Keys.NO_KEY_SET)
+        if emu.memory.signed[0x223ce2e0] != 0x7f:
+            emu.memory.write_byte(0x223ce2e0, 0x7f)
+            print('unlocked all nitro courses')
+        if emu.memory.signed[0x223ce2e1] != 0x7f:
+            emu.memory.write_byte(0x223ce2e1, 0x7f)
+            print('unlocked all retro courses')
+        if emu.memory.signed[0x223ce2e2] != 0x7f:
+            emu.memory.write_byte(0x223ce2e2, 0x7f)
+            print('unlocked all characters')
 
-    if emu.memory.signed[0x223ce2e0] != 0x7f:
-        emu.memory.write_byte(0x223ce2e0, 0x7f)
-        print('unlocked all nitro courses')
-    if emu.memory.signed[0x223ce2e1] != 0x7f:
-        emu.memory.write_byte(0x223ce2e1, 0x7f)
-        print('unlocked all retro courses')
-    if emu.memory.signed[0x223ce2e2] != 0x7f:
-        emu.memory.write_byte(0x223ce2e2, 0x7f)
-        print('unlocked all characters')
+        buff = emu.display_buffer_as_rgbx()
 
-    buff = emu.display_buffer_as_rgbx()
+        gpu_framebuffer = np.frombuffer(buff, dtype=np.uint8)
 
-    gpu_framebuffer = np.frombuffer(buff, dtype=np.uint8)
+        #upper_image = gpu_framebuffer[:SCREEN_PIXEL_SIZE*4]
+        #lower_image = gpu_framebuffer[SCREEN_PIXEL_SIZE*4:]
 
-    #upper_image = gpu_framebuffer[:SCREEN_PIXEL_SIZE*4]
-    #lower_image = gpu_framebuffer[SCREEN_PIXEL_SIZE*4:]
+        #upper_image = upper_image.reshape((SCREEN_HEIGHT, SCREEN_WIDTH, 4))
+        #lower_image = lower_image.reshape((SCREEN_HEIGHT, SCREEN_WIDTH, 4))
 
-    #upper_image = upper_image.reshape((SCREEN_HEIGHT, SCREEN_WIDTH, 4))
-    #lower_image = lower_image.reshape((SCREEN_HEIGHT, SCREEN_WIDTH, 4))
+        #cv2.imshow('frame', upper_image)
+        #cv2.imshow('frame2', lower_image)
 
-    #cv2.imshow('frame', upper_image)
-    #cv2.imshow('frame2', lower_image)
+        whole_frame = gpu_framebuffer[:SCREEN_PIXEL_SIZE_BOTH * 4]
+        whole_frame = whole_frame.reshape((SCREEN_HEIGHT_BOTH, SCREEN_WIDTH, 4))
+        # resize and make grayscale to 84x84 to match Atari
+        #whole_frame = cv2.resize(whole_frame, (84, 84))
+        #whole_frame = cv2.cvtColor(whole_frame, cv2.COLOR_BGR2GRAY)
+        cv2.imshow('frame', whole_frame)
 
-    whole_frame = gpu_framebuffer[:SCREEN_PIXEL_SIZE_BOTH * 4]
-    whole_frame = whole_frame.reshape((SCREEN_HEIGHT_BOTH, SCREEN_WIDTH, 4))
-    # resize and make grayscale to 84x84 to match Atari
-    whole_frame = cv2.resize(whole_frame, (84, 84))
-    #whole_frame = cv2.cvtColor(whole_frame, cv2.COLOR_BGR2GRAY)
-    cv2.imshow('frame', whole_frame)
+        pressed_key = cv2.waitKey(10) & 0xFF
 
-    pressed_key = cv2.waitKey(10) & 0xFF
-
-    if pressed_key == ord('q'):
-        break
-    # elif pressed_key == ord('c'):
-    #     emu.savestate.save_file('rainbow_road_time_trial.dsv')
-    # elif pressed_key == ord('v'):
-    #     emu.savestate.load_file('rainbow_road_time_trial.dsv')
-        i = 0
-    elif pressed_key == ord('r'):
-        emu.open('Mario Kart DS (USA) (En,Fr,De,Es,It)/Mario Kart DS (USA) (En,Fr,De,Es,It).nds')
-        i = 0
-    else:
-        emu.input.keypad_add_key(key_dict.get(pressed_key, Keys.KEY_NONE))
+        if pressed_key == ord('q'):
+            break
+        elif pressed_key == ord('c'):
+            track_name = input('enter track name:')
+            if track_name:
+                emu.savestate.save_file('ROM/linux_saves/' + track_name + '.dsv')
+        elif pressed_key == ord('v'):
+            track_name = input('enter track name:')
+            if track_name:
+                emu.savestate.load_file('ROM/linux_saves/' + track_name + '.dsv')
+            i = 0
+        elif pressed_key == ord('r'):
+            emu.open('ROM/Mario Kart DS.nds')
+            i = 0
+        else:
+            emu.input.keypad_add_key(key_dict.get(pressed_key, Keys.KEY_NONE))
 
 
 # # https://tasvideos.org/GameResources/DS/MarioKartDS
