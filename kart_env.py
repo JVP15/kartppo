@@ -18,7 +18,6 @@ from desmume.controls import Keys, keymask
 
 TOTAL_LAPS = 3
 
-
 # addresses from https://tasvideos.org/GameResources/DS/MarioKartDS
 PLAYER_DATA_ADDR = 0x217ACF8
 SPEED_OFFSET = 0x2A8
@@ -42,6 +41,7 @@ ACTION_ITEM = 1
 
 FRAMES_BEFORE_START = 256  # there is the 3, 2, 1 countdown, although 256 isn't the exact value, it's close enough.
 TIMEOUT = 600 # if we don't pass a checkpoint after 600 frames (~10 seconds @ Mario Kart's naitive 60fps) then we terminate the episode
+MAX_BACKWARD_PROGRESS = 3 # if we go back a checkpoint 3 times (either by driving backward or by being respawned by lakitu), then we terminate the episode
 
 ROM_FILE = 'ROM/Mario Kart DS.nds'
 
@@ -50,9 +50,12 @@ SAVESTATE_DIR = os.path.join('ROM', 'windows_saves' if os.name == 'nt' else 'lin
 
 #SAVESTATE_FILES = ('figure-8_circuit_time_trial.dsv', )
 #SAVESTATE_FILES = ('figure-8_circuit_grand_prix.dsv', )
+SAVESTATE_FILES = ('rainbow_road_time_trial.dsv', )
 #SAVESTATE_FILES = ('figure_8_time_trial.dsv', 'yoshi_falls_time_trial.dsv',)
 #SAVESTATE_FILES = ('luigis_mansion_time_trial.dsv', )
-SAVESTATE_FILES = ('figure_8_time_trial.dsv', 'yoshi_falls_time_trial.dsv', 'cheep_cheep_beach_time_trial.dsv','rainbow_road_time_trial.dsv', )
+#SAVESTATE_FILES = ('figure_8_time_trial.dsv', 'yoshi_falls_time_trial.dsv', 'cheep_cheep_beach_time_trial.dsv','rainbow_road_time_trial.dsv', )
+
+EMU = None
 
 class MarioKartEnv(gym.Env):
 
@@ -72,20 +75,30 @@ class MarioKartEnv(gym.Env):
         else:
             self.observation_space = gym.spaces.Box(low=0, high=255, shape=(SCREEN_HEIGHT, SCREEN_WIDTH, 3), dtype=np.uint8)
 
-        self.emu = DeSmuME()
-        self.emu.volume_set(0) # emulator makes noise even when headless
+        global EMU
+
+        if EMU is None:
+            self.emu = DeSmuME()
+            self.emu.volume_set(0)  # emulator makes noise even when headless
+
+            EMU = self.emu
+        else:
+            print(
+                "Emulator already exists, re-using existing emulator. This could cause serious problems if you don't reset before using either emulator object.")
+            self.emu = EMU
+
 
         self.mem = self.emu.memory
 
         self.emu.open(rom_file)
         self.savestate_files = savestate_files
         self.grand_prix = False
-
         self.checkpoint = None
         self.final_checkpoint = None # this is useful for detecting when we've finished a lap; we set this during reset()
         self.frames_since_checkpoint = -FRAMES_BEFORE_START # if we don't make any forward progress, we're stuck and we terminate the episode (also give a buffer for the countdown)
 
         self.top_speed = 0
+        self.backward_progress = 0
 
         self.laps = -1  # we add 1 to the lap counter whenever we go from the last checkpoint to checkpoint 0, and we start in the last checkpoint, so it's easier to just start at -1
 
@@ -165,6 +178,7 @@ class MarioKartEnv(gym.Env):
 
         # print('top speed = ', self.top_speed, 'speed = ', speed, 'speed penalty = ', speed_penalty)
         # print('saved checkpoint = ', self.checkpoint, 'current checkpoint = ', cur_checkpoint)
+        # self.render()
 
         if (cur_checkpoint - self.checkpoint == 1   # if we've moved to the next checkpoint...
                 or (cur_checkpoint == 0 and self.checkpoint == self.final_checkpoint)): # or if we've finished a lap, give a reward
@@ -176,11 +190,14 @@ class MarioKartEnv(gym.Env):
                 self.laps += 1
                 reward = 100
 
+                self.backward_progress = 0 # I'm feeling nice toward the AI so I'll reset the backward counter (i.e. the lakitu respawn counter) when it finishes a lap
+
             self.checkpoint = cur_checkpoint
             self.frames_since_checkpoint = 0
         elif cur_checkpoint - self.checkpoint <= -1:
             reward -= 2 * 200 / (self.final_checkpoint) # if we go backwards, I'll give it a penalty that is twice as large as the reward for going forwards
             self.checkpoint = cur_checkpoint
+            self.backward_progress += 1
 
         if not (in_air and speed == 0): # this checks if we're being respawned by lakitu, if so, we don't want to count it towards the timeout
             self.frames_since_checkpoint += 1
@@ -191,7 +208,7 @@ class MarioKartEnv(gym.Env):
             if self.grand_prix:
                 reward += 1000 / place
 
-        elif self.frames_since_checkpoint > TIMEOUT:
+        elif self.frames_since_checkpoint > TIMEOUT or self.backward_progress >= MAX_BACKWARD_PROGRESS:
             truncated = True
             place = 9 # if we timeout, even in grand prix, always place 9th (especially since places go 1-8 otherwise)
 
@@ -199,7 +216,7 @@ class MarioKartEnv(gym.Env):
 
         return self._get_obs(), reward, terminated, truncated, {'percent_complete': percent_complete, 'place': place}
 
-    def render(self, mode='human'):
+    def render(self, mode='rgb_array'):
         if self.render_mode == 'human':
             frame = self._get_screen_rgb()
             cv2.imshow('Mario Kart', frame)
@@ -228,6 +245,7 @@ class MarioKartEnv(gym.Env):
         self.final_checkpoint = self.checkpoint
         self.frames_since_checkpoint = -FRAMES_BEFORE_START
         self.laps = -1
+        self.backward_progress = 0
 
         # the top speed at the start is the normal speed on the ground, so we can use that as a baseline
         player_data_ptr = self.mem.signed.read_long(PLAYER_DATA_ADDR)
@@ -265,7 +283,7 @@ class MarioKartEnvMultiDiscrete(MarioKartEnv):
             self.emu.input.keypad_add_key(keymask(Keys.KEY_X))
 
 
-def create_wrapped_mario_kart_env():
+def create_wrapped_mario_kart_env(**kwargs):
     env = MarioKartEnv(include_lower_frame=True)
     env = MarioAtariWrapper(env, screen_size=84, frame_skip=4)
     #env = FrameStack(env, num_stack=4)
@@ -295,5 +313,14 @@ if old_gym: # if the old gym is installed, then register for that too
         nondeterministic=True,
     )
 
+if __name__ == '__main__':
+    import gymnasium as gym
 
+    def make_env():
+        print('\n\nMADE ENV\n\n')
+        return gym.make('MarioKartDS-v0')
+    # create the asynchronous environment
+    env = gym.vector.AsyncVectorEnv([lambda: make_env() for _ in range(4)], context='forkserver')
+    #env.reset()
 
+    print('made it all the way here')

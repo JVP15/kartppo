@@ -2,6 +2,7 @@ from desmume.emulator import DeSmuME, SCREEN_PIXEL_SIZE, SCREEN_WIDTH, SCREEN_HE
 from desmume.controls import keymask, Keys
 import cv2
 import numpy as np
+import os
 
 
 PLAYER_DATA_ADDR = 0x217ACF8
@@ -12,6 +13,8 @@ CHECKPOINT_OFFSET = 0xDAE
 
 # look here to unlock stuff http://uk.codejunkies.com/search/codes/Mario-Kart-DS_Nintendo-DS_17825906-17___.aspx
 # https://tasvideos.org/GameResources/DS/MarioKartDS
+
+SAVESTATE_DIR = os.path.join('ROM', 'windows_saves' if os.name == 'nt' else 'linux_saves')
 
 if __name__ == '__main__':
     emu = DeSmuME()
@@ -27,11 +30,16 @@ if __name__ == '__main__':
 
     i = 0
 
+    in_game = False
+
+
     while True:
         i += 1
         print(i)
         emu.cycle()
-        emu.input.keypad_rm_key(Keys.NO_KEY_SET)
+
+        if not in_game: # always reset the keypresses if we aren't in-game to make menu navigation easier
+            emu.input.keypad_rm_key(Keys.NO_KEY_SET)
 
         if emu.memory.signed[0x223ce2e0] != 0x7f:
             emu.memory.write_byte(0x223ce2e0, 0x7f)
@@ -70,18 +78,19 @@ if __name__ == '__main__':
         elif pressed_key == ord('c'):
             track_name = input('enter track name:')
             if track_name:
-                emu.savestate.save_file('ROM/linux_saves/' + track_name + '.dsv')
+                emu.savestate.save_file(os.path.join(SAVESTATE_DIR,track_name + '.dsv'))
         elif pressed_key == ord('v'):
             track_name = input('enter track name:')
             if track_name:
-                emu.savestate.load_file('ROM/linux_saves/' + track_name + '.dsv')
+                emu.savestate.load_file(os.path.join(SAVESTATE_DIR,track_name + '.dsv'))
             i = 0
         elif pressed_key == ord('r'):
             emu.open('ROM/Mario Kart DS.nds')
             i = 0
-        else:
-            emu.input.keypad_add_key(key_dict.get(pressed_key, Keys.KEY_NONE))
-
+        elif pressed_key == ord('g'): # toggle to let us know whether we're in-game or not
+            in_game = not in_game
+        elif pressed_key in key_dict:
+            emu.input.keypad_add_key(key_dict[pressed_key])
 
 # # https://tasvideos.org/GameResources/DS/MarioKartDS
 #     emu = DeSmuME()

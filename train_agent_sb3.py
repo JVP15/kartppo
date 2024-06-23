@@ -1,11 +1,15 @@
 from datetime import datetime
 
 from sb3_contrib import RecurrentPPO
+
+from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecFrameStack
 
 from kart_env import MarioKartEnvMultiDiscrete, MarioKartEnv
 from utils import MarioAtariWrapper, TensorboardCallback
+
+import numpy as np
 
 if __name__ == '__main__':
 
@@ -29,7 +33,8 @@ if __name__ == '__main__':
     # get the current datetime so we can use it to name our tensorboard log directory
     output_folder = f'./runs/{now.strftime("%Y-%m-%d_%H-%M-%S")}/'
 
-    model = RecurrentPPO('CnnLstmPolicy', env, verbose=1, tensorboard_log=output_folder, policy_kwargs={'enable_critic_lstm': False}, n_steps=2048)
+    #model = RecurrentPPO('CnnLstmPolicy', env, verbose=1, tensorboard_log=output_folder, policy_kwargs={'enable_critic_lstm': False}, n_steps=2048)
+    model = PPO('CnnPolicy', env, verbose=1, tensorboard_log=output_folder, n_steps=2048)
 
     #model = RecurrentPPO.load('./runs/2023-10-22_08-40-18/mario-kart-rppo.zip', tensorboard_log=output_folder, env=env) # okay, maybe try startin with a pretrained model
 

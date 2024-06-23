@@ -173,4 +173,7 @@ if old_gym:
             self.kart_env.unwrapped.render_mode = mode
             return self.kart_env.render()
 
+else:
+    MarioKartEnvOldGym = None
+
 
